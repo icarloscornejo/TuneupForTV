@@ -1,0 +1,48 @@
+# Sony BRAVIA BF1 (BRAVIA_BF1_4K_M_A), Google TV 12, firmware STT2.230811.001, lista probada de Carlos
+#
+# Everything is DISABLED, not uninstalled. Lines starting with "#?" are optional and start unchecked.
+# Kept on purpose: sonysystemservice, airplayapp, mediashell (Chromecast), smartui, mediatek tis and tv agent.
+
+# Tracking, ads and promos
+tv.samba.ssm
+com.sony.dtv.sonyselect
+com.sony.dtv.promos
+com.sony.dtv.sonytab
+com.google.android.feedback
+com.sony.dtv.b2b.vendorprotocol
+com.mediatek.tv.oneworld.logdump
+com.mediatek.tv.oneworld.logdumpservice
+
+# Shop demo and help
+com.sony.dtv.demosupport
+com.sony.dtv.demosystemsupport
+com.sony.dtv.multiscreendemo
+com.sony.dtv.helpguidecontents
+
+# Auto-installs and first-run leftovers
+android.autoinstalls.config.sony.bluefin   # Play Auto Install pushed apps onto the TV by itself
+com.google.android.partnersetup
+com.google.android.onetimeinitializer
+com.google.android.syncadapters.calendar
+com.android.printspooler
+
+# UK channel launchers
+com.sony.dtv.all4launcher
+com.sony.dtv.iplayerlauncher
+com.sony.dtv.itvlauncher
+com.sony.dtv.my5launcher
+com.youview.poa
+
+# Preinstalled apps
+com.google.android.play.games
+com.google.android.youtube.tvmusic
+com.google.android.youtube.tv
+com.crunchyroll.crunchyroid
+
+# Voice
+com.google.android.katniss
+com.sony.dtv.voicesearch
+
+# Antenna tuners
+#? com.mediatek.dtv.tvinput.atsctuner   # only if you do not use an antenna
+#? com.mediatek.dtv.tvinput.dvbtuner   # only if you do not use an antenna

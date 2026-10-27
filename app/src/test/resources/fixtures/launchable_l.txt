@@ -1,0 +1,11 @@
+com.android.vending
+com.disney.disneyplus
+com.mediatek.tv.oneworld.tvcenter
+com.mediatek.tv.systemupdater
+com.netflix.ninja
+com.spocky.projengmenu
+com.spotify.tv.android
+hn.cablecolor.ccveotv
+io.github.visnkmr.bapl
+org.localsend.localsend_app
+org.smarttube.stable

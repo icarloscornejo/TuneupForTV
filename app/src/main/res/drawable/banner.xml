@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 320x180 leanback banner. Placeholder art, polished in M5. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <path
+        android:fillColor="#101418"
+        android:pathData="M0,0h320v180h-320z" />
+    <!-- TV frame -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M92,44h136a8,8 0 0,1 8,8v68a8,8 0 0,1 -8,8h-136a8,8 0 0,1 -8,-8v-68a8,8 0 0,1 8,-8z"
+        android:strokeColor="#A8C7FA"
+        android:strokeWidth="6" />
+    <!-- Stand -->
+    <path
+        android:fillColor="#A8C7FA"
+        android:pathData="M132,136h56v6h-56z" />
+    <!-- Check mark: safe tune-up -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M132,90l20,20l38,-38"
+        android:strokeColor="#7FDC8C"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="10" />
+</vector>

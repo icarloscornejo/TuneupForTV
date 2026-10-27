@@ -1,0 +1,15 @@
+com.amazon.amazonvideo.livingroom
+com.android.tv.settings
+com.android.vending
+com.apple.atve.androidtv.appletv
+com.disney.disneyplus
+com.mediatek.tv.oneworld.tvcenter
+com.netflix.ninja
+com.sony.dtv.timers
+com.spocky.projengmenu
+com.spotify.tv.android
+com.wbd.stream
+hn.cablecolor.ccveotv
+io.github.visnkmr.bapl
+org.localsend.localsend_app
+org.smarttube.stable
