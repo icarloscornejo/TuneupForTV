@@ -7,8 +7,12 @@
 <p align="center">
   <img alt="Android TV" src="https://img.shields.io/badge/Android%20TV-8.0%2B-3DDC84?logo=androidtv&logoColor=white">
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?logo=kotlin&logoColor=white">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.0.0-blue">
+  <a href="https://github.com/icarloscornejo/TuneupForTV/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/icarloscornejo/TuneupForTV"></a>
   <img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-lightgrey">
+</p>
+
+<p align="center">
+  <a href="README.es.md">Leer en español</a>
 </p>
 
 <p align="center">
@@ -35,7 +39,7 @@ endless settings: only speed and simplicity.
   </tr>
   <tr>
     <td width="50%"><img src="screenshots/package-detail.png" alt="Package page"><br><b>Package page</b><br>The actions the guard allows, the details, and why a package is protected when it is.</td>
-    <td width="50%"><img src="screenshots/processes.png" alt="Processes"><br><b>Processes</b><br>What is running now and how much memory it holds. Force stop one app or everything listed.</td>
+    <td width="50%"><img src="screenshots/processes.png" alt="Processes"><br><b>Processes</b><br>What is running now and how much memory it holds. Force stop one app or everything listed, and it tells you when Android opens one again.</td>
   </tr>
   <tr>
     <td width="50%"><img src="screenshots/health.png" alt="Health"><br><b>Health</b><br>Memory, swap, CPU and recent crashes, compared with the start of the session.</td>
@@ -75,6 +79,23 @@ an assistant leads: choose, confirm, clean, result and, last and optional, a lig
   </tr>
 </table>
 
+**When a package fails** the cleanup does not stop. A package the TV refuses is skipped and the run goes on with the
+rest; its row shows what the TV said, word for word, so you can photograph it for a report. At the end you can undo
+only the ones that failed, undo everything, or continue with what was left. The run only stops when a change leaves
+something for you to decide, and then it asks: keep it, or undo it and carry on. The same works for several packages
+chosen on the Packages screen.
+
+## Install
+
+1. Download `TuneupForTV-X.Y.Z.apk` from the [latest release](https://github.com/icarloscornejo/TuneupForTV/releases/latest).
+2. Send it from your phone to the TV with [LocalSend](https://localsend.org) (free and open source; install it on both,
+   on the same Wi-Fi).
+3. Open the APK on the TV and install it. The TV may ask you to allow installs from the app that received the file.
+
+Later versions come from inside the app: **Settings > Check for updates** downloads the new release, checks it against
+the hash published with it, and the TV asks you to confirm. Tuneup also looks once when it starts and says on the
+Settings card when there is a newer version.
+
 ## First start
 
 The app reads and changes the TV through its own ADB, so the first time the TV asks you to trust it: turn on
@@ -89,28 +110,13 @@ network debugging in the TV's developer options, open Tuneup, and in the prompt 
 </table>
 
 ## Build
-Requires JDK 17+ and the Android SDK (see `local.properties`).
+
+JDK 17+ and the Android SDK.
 
 ```
-./gradlew :app:testDebugUnitTest      # unit tests
-./gradlew :app:assembleDebug          # app/build/outputs/apk/debug/app-debug.apk
-adb connect <tv-ip>:5555
-adb -s <tv-ip>:5555 install -r app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:testDebugUnitTest
+./gradlew :app:assembleDebug
 ```
-
-## Versioning
-[Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`.
-
-- The version is written once, as `appVersion` in `app/build.gradle.kts`; `versionCode` is derived from it
-  (`major * 10000 + minor * 100 + patch`).
-- Changes go under `Unreleased` in [CHANGELOG.md](CHANGELOG.md) as they land.
-- To release: move `Unreleased` to the new version, bump `appVersion`, commit as `Release vX.Y.Z`, and tag it `vX.Y.Z`.
-- The in-app update ("Check for updates" in Settings) installs the latest GitHub release: attach to it one
-  `TuneupForTV-X.Y.Z.apk` and its `.sha256` (`shasum -a 256`), the tag being `vX.Y.Z`. Android only installs it over
-  the installed Tuneup if it is signed with the same key. v1.0.0 was signed with the release machine's debug key, so
-  keep a backed-up copy of it and point `keystore.properties` at it (at the root of the repo, never committed:
-  `storeFile`, `storePassword`, `keyAlias`, `keyPassword`). Check each release with
-  `apksigner verify --print-certs`: the certificate SHA-256 must be the same as the one of v1.0.0.
 
 ## Debloat lists
 
