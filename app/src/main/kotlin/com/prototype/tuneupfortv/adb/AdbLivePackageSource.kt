@@ -5,6 +5,7 @@ import com.prototype.tuneupfortv.device.DeviceFailure
 import com.prototype.tuneupfortv.device.PackageName
 import com.prototype.tuneupfortv.adb.Parsers
 import com.prototype.tuneupfortv.device.PackageState
+import com.prototype.tuneupfortv.device.ProcessName
 import com.prototype.tuneupfortv.safety.LauncherPackages
 import com.prototype.tuneupfortv.safety.LauncherSnapshot
 import com.prototype.tuneupfortv.safety.LivePackageSource
@@ -40,6 +41,22 @@ class AdbLivePackageSource(
         )
     }
 
+    override suspend fun pids(packageName: PackageName): List<Int>? {
+        val process = ProcessName.orNull(packageName.value) ?: return null
+        val result = try {
+            client.shell(Commands.pidOf(process), PIDS_DEADLINE)
+        } catch (error: DeviceException) {
+            return null
+        }
+        if (result.observedSerial != expectedSerial) return null
+        val output = result.stdout.trim()
+        return when {
+            result.exitCode == 0 -> output.split(Regex("\\s+")).mapNotNull { it.toIntOrNull() }.takeIf { it.isNotEmpty() }
+            result.exitCode == 1 && output.isEmpty() -> emptyList()
+            else -> null
+        }
+    }
+
     /** Null when either part is unreadable, or a package the rules look at has a record that cannot be trusted: they then refuse. */
     private fun launchers(dump: String?, candidates: String?): LauncherSnapshot? {
         if (dump == null || candidates == null) return null
@@ -55,6 +72,7 @@ class AdbLivePackageSource(
 
     private companion object {
         val READ_DEADLINE = 15.seconds
+        val PIDS_DEADLINE = 10.seconds
         val LAUNCHER_READ_DEADLINE = 30.seconds
     }
 }

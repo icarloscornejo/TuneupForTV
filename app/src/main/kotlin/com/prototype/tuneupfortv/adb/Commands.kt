@@ -201,6 +201,9 @@ object Commands {
     fun pidofAll(names: List<ProcessName>): ShellCommand =
         read("for n in ${names.joinToString(" ")}; do p=\$(pidof \$n); echo \"@@\$n|\$?|\$p\"; done")
 
+    /** The pids of one process. Exit 1 with no output means it is not running. */
+    fun pidOf(name: ProcessName): ShellCommand = read("pidof $name")
+
     /** Crashes since [since], on the device clock. Empty output with exit 0 means no crash. */
     fun crashLog(since: Epoch): ShellCommand = read("logcat -d -b crash -T $since.000")
 
@@ -250,6 +253,10 @@ object Commands {
 
     fun forceStop(packageName: PackageName, serial: DeviceSerial): ShellCommand =
         mutation("am force-stop $USER_ZERO $packageName", serial)
+
+    /** The owner's "install unknown apps" switch for [packageName] (this app), which its own update needs. */
+    fun allowInstalls(packageName: PackageName, serial: DeviceSerial): ShellCommand =
+        mutation("appops set $packageName REQUEST_INSTALL_PACKAGES allow", serial)
 
     fun disableUser(packageName: PackageName, serial: DeviceSerial): ShellCommand =
         mutation("pm disable-user $USER_ZERO $packageName", serial)

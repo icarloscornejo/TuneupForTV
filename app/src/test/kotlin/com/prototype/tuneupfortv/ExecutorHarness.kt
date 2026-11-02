@@ -48,6 +48,7 @@ class ExecutorHarness(
             profile = DeviceProfiles.SONY,
             ownPackage = ownPackage,
             watchSeconds = watchSeconds,
+            pause = { fake.advance(it) },
             dispatcher = Dispatchers.Unconfined,
             nowMillis = { nowMillis },
         )

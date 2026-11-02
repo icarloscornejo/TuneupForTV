@@ -1,11 +1,21 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
 }
 
+// Release signing key: keystore.properties at the root of the repo (storeFile, storePassword, keyAlias, keyPassword),
+// never committed. It points at a backed-up copy of the key that signed v1.0.0, so every release is signed by the same
+// key and the in-app update installs over the old one. Without it a release build is signed with this machine's debug key.
+val keystoreProperties: Properties = Properties().apply {
+    val file = rootProject.file("keystore.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+
 // The one place the version is written. Follows Semantic Versioning (MAJOR.MINOR.PATCH); the code is derived from it.
-val appVersion = "1.0.0"
+val appVersion = "1.1.0"
 val (versionMajor, versionMinor, versionPatch) = appVersion.split(".").map(String::toInt)
 
 android {
@@ -25,6 +35,17 @@ android {
         localeFilters += listOf("en", "es")
     }
 
+    signingConfigs {
+        if (keystoreProperties.isNotEmpty()) {
+            create("release") {
+                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             // Never ship a debuggable APK: `run-as` would expose the ADB private key.
@@ -32,8 +53,9 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Sideloaded from GitHub, not published to Play: the debug key is enough.
-            signingConfig = signingConfigs.getByName("debug")
+            // Sideloaded from GitHub, not published to Play: the key of v1.0.0 (the debug key of the release machine) is enough,
+            // as long as every release is signed with that same one.
+            signingConfig = signingConfigs.getByName(if (keystoreProperties.isNotEmpty()) "release" else "debug")
         }
     }
 

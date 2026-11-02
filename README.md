@@ -103,12 +103,19 @@ adb -s <tv-ip>:5555 install -r app/build/outputs/apk/debug/app-debug.apk
 
 - The version is written once, as `appVersion` in `app/build.gradle.kts`; `versionCode` is derived from it
   (`major * 10000 + minor * 100 + patch`).
-- To release: bump `appVersion`, commit as `Release vX.Y.Z`, and tag it `vX.Y.Z`.
+- Changes go under `Unreleased` in [CHANGELOG.md](CHANGELOG.md) as they land.
+- To release: move `Unreleased` to the new version, bump `appVersion`, commit as `Release vX.Y.Z`, and tag it `vX.Y.Z`.
+- The in-app update ("Check for updates" in Settings) installs the latest GitHub release: attach to it one
+  `TuneupForTV-X.Y.Z.apk` and its `.sha256` (`shasum -a 256`), the tag being `vX.Y.Z`. Android only installs it over
+  the installed Tuneup if it is signed with the same key. v1.0.0 was signed with the release machine's debug key, so
+  keep a backed-up copy of it and point `keystore.properties` at it (at the root of the repo, never committed:
+  `storeFile`, `storePassword`, `keyAlias`, `keyPassword`). Check each release with
+  `apksigner verify --print-certs`: the certificate SHA-256 must be the same as the one of v1.0.0.
 
 ## Debloat lists
 
-The Debloat screen ships 307 lists from [cleanyourtv](https://github.com/Gathin23/cleanyourtv) (MIT, licence in
-`app/src/main/assets/licenses/cleanyourtv.txt`), pinned to commit `5ee685b02014fa502ea0951ee1f49abd7ee2e8c1`, plus
+The Debloat screen ships 416 lists from [cleanyourtv](https://github.com/Gathin23/cleanyourtv) (MIT, licence in
+`app/src/main/assets/licenses/cleanyourtv.txt`), pinned to commit `a1e948c665abf5af86c3aab08fe05053686a6bf3`, plus
 `mi-bravia-bf1.txt`, written and tested by hand for the BRAVIA BF1. The pinned commit and its date are in
 `tools/cleanyourtv.pin`.
 

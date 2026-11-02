@@ -14,6 +14,8 @@
     <string name="auth_title">Allow this app on the device</string>
     <string name="auth_body">The device should be showing “Allow USB debugging?”. Choose “Always allow” and press OK, then tap Retry.</string>
     <string name="retry">Retry</string>
+    <string name="prompt_missing_title">The TV did not show the permission prompt</string>
+    <string name="prompt_missing_body">Its ADB is stuck on an earlier prompt. Restart the TV and open Tuneup again; when it asks “Allow USB debugging?”, choose “Always allow”.</string>
 
     <string name="failure_title">Could not connect</string>
     <string name="failure_unreachable">The device does not answer. Check that network debugging is on in this device.</string>
@@ -156,6 +158,11 @@
     <string name="accept_refused_missing">That change no longer exists.</string>
     <string name="result_stopped_title">Stopped</string>
     <string name="result_stopped">The app was stopped.</string>
+    <string name="result_relaunched_title">Opened again</string>
+    <string name="result_relaunched">Stopped, but Android opened it again right away: something on the TV starts it. To keep it closed, disable it.</string>
+    <string name="result_still_running_title">Still running</string>
+    <string name="result_still_running">The TV says it stopped, but it is still running.</string>
+    <string name="force_stop_reopened">%1$d came back or kept running. To keep them closed, disable them.</string>
     <string name="result_stop_failed">The app could not be stopped. Try again.</string>
     <string name="force_stop_all">Force stop all</string>
     <string name="closeall_title">Force stop all</string>
@@ -175,7 +182,7 @@
     <string name="batch_force_stop">Force stop (%1$d)</string>
     <string name="selected_count">Selected: %1$d</string>
     <string name="batch_title">Several packages</string>
-    <string name="batch_body">These %1$d packages will be changed one after another. Each one is checked again right before it is touched, and the batch stops at the first change that does not end clean.</string>
+    <string name="batch_body">These %1$d packages will be changed one after another. Each one is checked again right before it is touched, and a package the TV refuses is skipped and explained. The batch only stops at a change that leaves something for you to decide.</string>
     <string name="batch_skipped">Left alone (%1$d):</string>
     <string name="batch_confirm">%1$s %2$d</string>
     <string name="batch_progress">%1$s: %2$d of %3$d…</string>
@@ -323,8 +330,31 @@
     <string name="debloat_no_list_hint">Lists are made per model. The ones from cleanyourtv cover other brands.</string>
     <string name="debloat_android" translatable="false">Android %1$s (API %2$d)</string>
     <string name="debloat_undo">Undo %1$d</string>
+    <string name="debloat_undo_failed">Undo the failed (%1$d)</string>
+    <string name="debloat_continue">Continue with %1$d left</string>
+    <string name="debloat_nothing_disabled">Nothing was disabled. The reason is on each app.</string>
+    <string name="failure_tv_said">The TV said: %1$s</string>
+    <string name="updates_title">Updates</string>
+    <string name="updates_version">Version %1$s</string>
+    <string name="updates_check">Check for updates</string>
+    <string name="updates_checking">Looking for a newer version…</string>
+    <string name="updates_up_to_date">Tuneup is up to date.</string>
+    <string name="updates_available">Version %1$s is available.</string>
+    <string name="updates_install">Install %1$s</string>
+    <string name="updates_installing">Downloading and checking the update…</string>
+    <string name="updates_confirm_hint">The download is checked against its published hash. The TV then asks you to confirm.</string>
+    <string name="updates_could_not_check">Could not reach GitHub. Check the internet and try again.</string>
+    <string name="updates_problem_download">The download failed or does not match its published hash. Nothing was installed.</string>
+    <string name="updates_problem_permission">Allow installs from Tuneup in the TV\'s settings (Install unknown apps), then try again.</string>
+    <string name="updates_problem_failed">The installer did not start. Nothing was installed.</string>
+    <string name="update_other_key">This update is signed with a different key than the installed Tuneup, so the TV refuses it.</string>
+    <string name="update_blocked">The TV does not let Tuneup install apps. Allow it in Install unknown apps.</string>
+    <string name="update_install_failed">The update could not be installed.</string>
+    <string name="home_update_available">Update %1$s available</string>
+    <string name="batch_undone">Put back: %1$d. Could not put back: %2$d.</string>
+    <string name="batch_failed_header">Did not go through (%1$d):</string>
     <string name="debloat_keep">Leave as is</string>
-    <string name="debloat_stopped_banner">It stopped at %1$s because something did not end clean. Check the TV: if anything is wrong, undo what was done.</string>
+    <string name="debloat_stopped_banner">It stopped at %1$s because that change left something for you to decide. Check the TV: keep it, or undo the failed ones and continue with what is left.</string>
     <string name="debloat_may_land_banner">Some may still switch off in a few minutes. Undo again later to be sure.</string>
     <string name="debloat_tab_disable">To disable (%1$d)</string>
     <string name="debloat_tab_disabled">Disabled (%1$d)</string>

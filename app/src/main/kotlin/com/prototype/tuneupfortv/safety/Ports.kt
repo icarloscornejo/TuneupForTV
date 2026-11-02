@@ -52,12 +52,16 @@ data class LauncherSnapshot(
 interface LivePackageSource {
     /** Reads the package, the Home launcher and the keyboard from the device, now. Throws [com.prototype.tuneupfortv.device.DeviceException]. */
     suspend fun read(packageName: PackageName): LiveReading
+
+    /** The pids of the process named like [packageName], now: empty when it is not running, null when that could not be read. */
+    suspend fun pids(packageName: PackageName): List<Int>?
 }
 
 /** What became of one command sent to the device. */
 sealed interface SendResult {
     data object Ran : SendResult
-    data class Failed(val exitCode: Int) : SendResult
+    /** [detail] is what the device printed, trimmed: users photograph it for a report. */
+    data class Failed(val exitCode: Int, val detail: String = "") : SendResult
 
     /** The connection never came up, so the command was certainly not sent. */
     data object NotSent : SendResult

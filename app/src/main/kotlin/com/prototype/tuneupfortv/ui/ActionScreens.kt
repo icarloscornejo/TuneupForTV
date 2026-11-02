@@ -158,7 +158,7 @@ fun ActionOverlay(state: AppUiState, connected: SessionState.Connected, actions:
         )
         is ActionUi.ClosedAll -> MessageView(
             R.string.closeall_done_title,
-            stringResource(R.string.closeall_done, ui.stopped, ui.failed),
+            stringResource(R.string.closeall_done, ui.stopped, ui.failed) + if (ui.reopened > 0) "\n" + stringResource(R.string.force_stop_reopened, ui.reopened) else "",
             actions::dismissAction,
             tone = if (ui.failed == 0) Tone.SUCCESS else Tone.WARNING,
             glyph = if (ui.failed == 0) "✓" else "!",
@@ -304,6 +304,8 @@ internal fun ResultView(
     when (outcome) {
         is ActionOutcome.Finished -> FinishedView(actions, liveEntry ?: outcome.entry, embedded, onDismiss, requestInitialFocus)
         ActionOutcome.ForceStopped -> MessageView(R.string.result_stopped_title, stringResource(R.string.result_stopped), onDismiss, Tone.SUCCESS, "✓", embedded, requestInitialFocus = requestInitialFocus)
+        ActionOutcome.ForceStopRelaunched -> MessageView(R.string.result_relaunched_title, stringResource(R.string.result_relaunched), onDismiss, Tone.WARNING, "!", embedded, requestInitialFocus = requestInitialFocus)
+        ActionOutcome.ForceStopStillRunning -> MessageView(R.string.result_still_running_title, stringResource(R.string.result_still_running), onDismiss, Tone.WARNING, "!", embedded, requestInitialFocus = requestInitialFocus)
         is ActionOutcome.ForceStopFailed -> MessageView(R.string.result_nothing_changed, stringResource(R.string.result_stop_failed), onDismiss, Tone.DANGER, "×", embedded, requestInitialFocus = requestInitialFocus)
         is ActionOutcome.Rejected -> MessageView(R.string.result_rejected_title, rejectReasonLabel(outcome.reason), onDismiss, Tone.INFO, "i", embedded, requestInitialFocus = requestInitialFocus)
         is ActionOutcome.Blocked -> {
@@ -327,6 +329,32 @@ private fun deviceErrorLabel(failure: DeviceFailure): String =
         DeviceFailure.AwaitingAuthorization -> stringResource(R.string.auth_body)
         is DeviceFailure.IdentityMismatch -> stringResource(R.string.failure_identity)
         is DeviceFailure.Other -> stringResource(R.string.failure_other, failure.message)
+    }
+
+/**
+ * Why a change did not come out clean, in the TV's own words when it gave them (people photograph this for a report).
+ * [liveEntry] is the journal's current copy of a finished change. Null for an outcome that needs no explanation.
+ */
+@Composable
+internal fun failureReason(outcome: ActionOutcome?, liveEntry: JournalEntry? = null): String? =
+    when (outcome) {
+        is ActionOutcome.Finished -> {
+            val entry = liveEntry ?: outcome.entry
+            val watch = entry.watch
+            when {
+                entry.failureDetail != null -> stringResource(R.string.failure_tv_said, entry.failureDetail)
+                entry.status == EntryStatus.NEEDS_REVIEW -> stringResource(R.string.result_review)
+                entry.status == EntryStatus.PENDING -> stringResource(R.string.result_pending)
+                watch?.state == WatchState.ANOMALY -> stringResource(R.string.result_anomaly, watch.detail.orEmpty())
+                watch?.state == WatchState.INCONCLUSIVE -> stringResource(R.string.result_inconclusive, watch.detail.orEmpty())
+                else -> null
+            }
+        }
+        is ActionOutcome.DeviceError -> deviceErrorLabel(outcome.failure)
+        is ActionOutcome.WatchUnavailable -> stringResource(R.string.result_watch_unavailable, outcome.detail)
+        is ActionOutcome.JournalFailed -> stringResource(R.string.result_journal_failed)
+        is ActionOutcome.ForceStopFailed -> stringResource(R.string.result_stop_failed)
+        else -> null
     }
 
 @Composable
@@ -373,6 +401,8 @@ private fun FinishedView(actions: AppActions, entry: JournalEntry, embedded: Boo
     ResultFrame(tone, glyph, stringResource(title), embedded) {
         Text(entry.packageId, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = TuneupTheme.colors.accent)
         BodyText(message)
+        // What the TV printed when it refused, as it said it.
+        entry.failureDetail?.let { BodyText(stringResource(R.string.failure_tv_said, it)) }
         Spacer(Modifier.height(if (embedded) 4.vp else 8.vp))
         if (needsDecision) {
             // The app never changes anything by itself after a change: what happens next is the user's choice.
@@ -610,12 +640,33 @@ private fun BatchDoneView(state: AppUiState, actions: AppActions, result: BatchR
         kicker = stringResource(R.string.batch_title),
     ) {
         BodyText(stringResource(R.string.batch_summary, result.succeeded, result.skipped, result.untried))
+        if (result.reopened > 0) BodyText(stringResource(R.string.force_stop_reopened, result.reopened))
+        if (result.undone > 0 || result.undoFailed > 0) BodyText(stringResource(R.string.batch_undone, result.undone, result.undoFailed))
+        val journal = state.connected?.journalEntries.orEmpty()
+        // What did not go through, with the TV's own words. The change that stopped the batch has its own report below.
+        val others = result.failed.filterKeys { it != result.stoppedAt }
+        if (others.isNotEmpty()) {
+            Text(stringResource(R.string.batch_failed_header, others.size), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.vp))
+            others.forEach { (packageId, failedOutcome) ->
+                val reason = failureReason(failedOutcome, journal.firstOrNull { it.id == result.entries[packageId] })
+                BodyText(listOfNotNull(rememberAppVisual(packageId).label, reason).joinToString(": "))
+            }
+        }
         if (result.stoppedAt != null && outcome != null) {
             Text(stringResource(R.string.batch_stopped_at, result.stoppedAt), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.vp, bottom = 8.vp))
-            ResultView(state, actions, outcome, embedded = true)
-        } else {
-            Spacer(Modifier.height(16.vp))
-            FocusButton(stringResource(R.string.close), onClick = actions::dismissAction, requestInitialFocus = true, style = ButtonStyle.PRIMARY)
+            val stopEntryId = (outcome as? ActionOutcome.Finished)?.entry?.id
+            ResultView(state, actions, outcome, embedded = true, liveEntry = journal.firstOrNull { it.id == stopEntryId })
+        }
+        // A force stop has nothing to put back; the other kinds can undo what failed or everything that changed.
+        val canUndo = result.kind != ActionKind.FORCE_STOP
+        val canContinue = result.untried > 0 && state.connected?.openEntries.orEmpty().isEmpty()
+        Spacer(Modifier.height(16.vp))
+        FlowRowButtons {
+            if (canUndo && result.failedToUndo.isNotEmpty()) FocusButton(stringResource(R.string.debloat_undo_failed, result.failedToUndo.size), onClick = { actions.restoreBatch(onlyFailed = true) })
+            if (canUndo && result.changed.isNotEmpty()) FocusButton(stringResource(R.string.debloat_undo, result.changed.size), onClick = { actions.restoreBatch(onlyFailed = false) })
+            if (canContinue) FocusButton(stringResource(R.string.debloat_continue, result.untried), onClick = actions::continueBatch)
+            // While a change waits for a decision its own report has the way out.
+            if (result.stoppedAt == null) FocusButton(stringResource(R.string.close), onClick = actions::dismissAction, requestInitialFocus = true, style = ButtonStyle.PRIMARY)
         }
     }
 }

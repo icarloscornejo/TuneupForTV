@@ -1,6 +1,7 @@
 package com.prototype.tuneupfortv
 
 import android.app.Application
+import android.content.pm.PackageInfo
 import com.prototype.tuneupfortv.adb.AdbDeviceGateway
 import com.prototype.tuneupfortv.adb.AdbKeys
 import com.prototype.tuneupfortv.adb.DadbAdbClient
@@ -8,8 +9,12 @@ import com.prototype.tuneupfortv.device.LauncherApk
 import com.prototype.tuneupfortv.device.LauncherRelease
 import com.prototype.tuneupfortv.session.DeviceSession
 import com.prototype.tuneupfortv.session.SharedDeviceState
+import com.prototype.tuneupfortv.store.ApkInstaller
 import com.prototype.tuneupfortv.store.LauncherSource
 import com.prototype.tuneupfortv.store.LauncherSwapStore
+import com.prototype.tuneupfortv.ui.UpdateInstallStart
+import java.io.File
+import java.io.IOException
 import com.prototype.tuneupfortv.device.DebloatList
 import com.prototype.tuneupfortv.store.DebloatAssets
 import com.prototype.tuneupfortv.store.ClassificationStore
@@ -37,6 +42,39 @@ class AppContainer private constructor(private val application: Application) {
 
     suspend fun downloadLauncher(release: LauncherRelease): LauncherApk? = launcherSource.download(release)
 
+    /** Tuneup updates itself from its own public releases: same source, same hash check as the launcher. */
+    private val appUpdateSource: LauncherSource = LauncherSource(APP_REPOSITORY)
+
+    suspend fun fetchAppRelease(): LauncherRelease? = appUpdateSource.latest()
+
+    /** Downloads the release into the cache, checked against its published hash. False when it cannot be had. */
+    suspend fun downloadAppUpdate(release: LauncherRelease): Boolean {
+        val apk = appUpdateSource.download(release) ?: return false
+        return withContext(Dispatchers.IO) {
+            try {
+                val target = updateFile()
+                target.parentFile?.mkdirs()
+                target.writeBytes(apk.bytes)
+                true
+            } catch (error: IOException) {
+                false
+            }
+        }
+    }
+
+    /** Hands the downloaded file to the system installer; the owner then confirms on screen. */
+    suspend fun startAppUpdateInstall(release: LauncherRelease): UpdateInstallStart =
+        withContext(Dispatchers.IO) { ApkInstaller(application, UpdateResultReceiver::class.java).install(updateFile(), release.versionName) }
+
+    private fun updateFile(): File = File(application.cacheDir, "update/TuneupForTV.apk")
+
+    /** The version running now, to tell a newer release apart. */
+    val installedVersionName: String get() = installedPackage().versionName.orEmpty()
+
+    val installedVersionCode: Long get() = installedPackage().longVersionCode
+
+    private fun installedPackage(): PackageInfo = application.packageManager.getPackageInfo(application.packageName, 0)
+
     /** The lock of changes and the journal, one of each for the whole process: a new session never works from an old copy. */
     private val shared: SharedDeviceState = SharedDeviceState(JsonJournalStore(application.filesDir))
 
@@ -61,6 +99,9 @@ class AppContainer private constructor(private val application: Application) {
 
         /** Where the LightLauncher releases are published. */
         private const val LAUNCHER_REPOSITORY: String = "icarloscornejo/LightLauncher"
+
+        /** Where the Tuneup releases are published. */
+        private const val APP_REPOSITORY: String = "icarloscornejo/TuneupForTV"
 
         @Volatile
         private var instance: AppContainer? = null

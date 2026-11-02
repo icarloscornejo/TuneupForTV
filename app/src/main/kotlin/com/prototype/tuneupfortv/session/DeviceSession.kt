@@ -61,7 +61,8 @@ data class HealthState(val atStart: HealthReading? = null, val now: HealthReadin
 
 sealed interface SessionState {
     data object Idle : SessionState
-    data object Connecting : SessionState
+    /** [keyAccepted]: the device let this app in and is being read, so no prompt is pending any more. */
+    data class Connecting(val keyAccepted: Boolean = false) : SessionState
 
     /** The device shows "Allow USB debugging?" and waits for the user. */
     data object NeedsAuthorization : SessionState
@@ -115,11 +116,11 @@ class DeviceSession(
 
     suspend fun connect() {
         close()
-        mutableState.value = SessionState.Connecting
+        mutableState.value = SessionState.Connecting()
         mutableState.value = try {
             val newGateway = openGateway()
             gateway = newGateway
-            val device = newGateway.connect()
+            val device = newGateway.connect { mutableState.value = SessionState.Connecting(keyAccepted = true) }
             val storedOverrides = withContext(ioDispatcher) { classificationStorage.loadOverrides() }
             val icons = withContext(ioDispatcher) { classificationStorage.rememberIcons(device.snapshot.launchable) }
             overrides = storedOverrides
@@ -197,6 +198,15 @@ class DeviceSession(
         syncJournal()
         return outcome
     }
+
+    /**
+     * Runs [block] while no change to the TV is in flight and none can start, so the app is never replaced halfway
+     * through one. Null when there is no connection. Do not call a change from inside [block]: the lock is not reentrant.
+     */
+    suspend fun <T> whileTvIsIdle(block: suspend () -> T): T? = executor?.exclusively(block)
+
+    /** Switches on "install unknown apps" for this app over the TV's own ADB. False when it did not take. */
+    suspend fun allowInstalls(): Boolean = gateway?.allowInstallsFor(ownPackage) ?: false
 
     // region the launcher swap
 

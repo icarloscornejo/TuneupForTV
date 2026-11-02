@@ -51,6 +51,9 @@ class FakeAdbClient(
     /** Makes a command exit with this code, by its command line. */
     val exitCodeOverrides: MutableMap<String, Int> = mutableMapOf()
 
+    /** What a package mutation prints on stderr when [exitCodeOverrides] makes it fail, by its command line. */
+    val stderrOverrides: MutableMap<String, String> = mutableMapOf()
+
     /** Only mutations fail, with this reason, and nothing is applied: the reads before them worked. */
     var mutationFailure: DeviceFailure? = null
 
@@ -254,6 +257,7 @@ class FakeAdbClient(
             inner == "top -b -n 2 -d 1" -> topOutput()
             inner == "recent_crashes" -> crashLog("logcat -d -b crash -T ${clockSeconds - 60}.000")
             inner.startsWith("logcat -d -b crash") -> crashLog(inner)
+            inner.startsWith("pidof ") -> pids[inner.removePrefix("pidof ")].orEmpty().joinToString(" ").let { if (it.isEmpty()) "" else "$it\n" }
             inner.startsWith("for n in ") -> pidLines(inner.removePrefix("for n in ").substringBefore(";"))
             inner.startsWith("pids") -> pidLines(inner.removePrefix("pids"))
             else -> ""
@@ -263,6 +267,8 @@ class FakeAdbClient(
     private fun commandResult(inner: String, stdout: String): Triple<Int, String, String> =
         when {
             inner.startsWith("logcat -d -b crash") && crashLogFails -> Triple(0, "", "logcat: -T 'x' not in time format.")
+            // Like the real `pidof`: exit 1 with no output when nothing runs.
+            inner.startsWith("pidof ") -> Triple(if (stdout.isBlank()) 1 else 0, stdout, "")
             inner.startsWith("pm list packages") || inner.startsWith("cmd package") || inner.startsWith("dumpsys") ||
                 inner.startsWith("getprop") || inner.startsWith("settings") || inner.startsWith("ps ") || inner.startsWith("cat ") ||
                 inner.startsWith("date") || inner.startsWith("logcat") || inner.startsWith("top ") || inner == "recent_crashes" || inner == "wifi_owners" || inner.startsWith("for n in ") || inner.startsWith("pids") -> Triple(0, stdout, "")
@@ -344,6 +350,10 @@ class FakeAdbClient(
         mutationFailure?.let { throw DeviceException(it) }
         if (timeoutWithoutApply) throw DeviceException(DeviceFailure.Timeout)
         launcherMutation(inner, command)?.let { return it }
+        if (inner.startsWith("appops set ")) {
+            mutations += inner.removePrefix("appops set ")
+            return ShellResult(0, "", "", null)
+        }
         val parts = inner.split(" ")
         val operation = when {
             parts[0] == "am" && parts[1] == "force-stop" -> "force-stop"
@@ -353,7 +363,7 @@ class FakeAdbClient(
         }
         val packageId = parts.last()
         require(packageId in packages) { "Unknown package $packageId" }
-        exitCodeOverrides[command.line]?.let { return ShellResult(it, "", "", null) }
+        exitCodeOverrides[command.line]?.let { return ShellResult(it, "", stderrOverrides[command.line].orEmpty(), null) }
         if (landLater) {
             pendingMutations += { apply(operation, packageId) }
             throw DeviceException(DeviceFailure.Timeout)

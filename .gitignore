@@ -9,5 +9,6 @@ captures/
 *.aab
 *.jks
 *.keystore
+keystore.properties
 .kotlin/
 tools/*.sh

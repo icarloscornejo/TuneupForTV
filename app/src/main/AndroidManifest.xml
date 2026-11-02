@@ -13,6 +13,10 @@
     <!-- The network is used for the ADB socket and, in the optional launcher step, to look up and download the latest LightLauncher release from GitHub. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Settings' "Check for updates" installs a newer Tuneup downloaded from GitHub through a PackageInstaller session.
+         The owner confirms on screen, and Android only installs it over this app if it has the same signature. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <!-- Only for the optional re-apply after a restart: it starts the job, and it warns when something went wrong. -->
 
     <!-- Only to show each app's real name and icon: the app reads them from its own device. Granted at install, no prompt. -->
@@ -42,6 +46,12 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- The system installer's answer for an update started from Settings. Not exported: only the session we create
+             holds the address of this receiver. -->
+        <receiver
+            android:name=".UpdateResultReceiver"
+            android:exported="false" />
 
         <!-- The app draws no emoji from a downloadable font: skip the startup work that sets it up. -->
         <provider

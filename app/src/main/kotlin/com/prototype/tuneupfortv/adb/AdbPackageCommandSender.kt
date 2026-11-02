@@ -42,9 +42,11 @@ internal suspend fun AdbClient.sendMutation(command: ShellCommand, deadline: Dur
     return when (result.exitCode) {
         0 -> SendResult.Ran
         Commands.IDENTITY_MISMATCH_EXIT -> SendResult.FenceRefused
-        else -> SendResult.Failed(result.exitCode)
+        else -> SendResult.Failed(result.exitCode, result.stderr.ifBlank { result.stdout }.trim().take(MAX_DETAIL_CHARS))
     }
 }
+
+private const val MAX_DETAIL_CHARS = 300
 
 internal fun sendResultOf(failure: DeviceFailure): SendResult =
     when (failure) {

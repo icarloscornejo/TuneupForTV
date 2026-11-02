@@ -23,15 +23,17 @@ class SnapshotLoader(private val client: AdbClient) {
      * The first read of a device: opens the connection, learns who it is, and reads everything.
      * The connection may wait for the user to accept "Allow USB debugging?": if it times out, TCP
      * did connect (a dead address fails earlier), so it is reported as [DeviceFailure.AwaitingAuthorization].
+     * A tiny probe goes first, so [onKeyAccepted] tells the waiting for the prompt apart from the long read after it.
      */
-    suspend fun connect(firstCallDeadline: Duration = FIRST_CALL_DEADLINE): LoadedDevice {
-        val result = try {
-            client.shell(Commands.readDevice(), firstCallDeadline)
+    suspend fun connect(firstCallDeadline: Duration = FIRST_CALL_DEADLINE, onKeyAccepted: () -> Unit = {}): LoadedDevice {
+        try {
+            client.shell(Commands.probeSerial(), firstCallDeadline)
         } catch (error: DeviceException) {
             if (error.failure == DeviceFailure.Timeout) throw DeviceException(DeviceFailure.AwaitingAuthorization, error)
             throw error
         }
-        return parse(result, expected = null)
+        onKeyAccepted()
+        return parse(client.shell(Commands.readDevice(), firstCallDeadline), expected = null)
     }
 
     /** Reads the same device again. Another device answering is refused. */

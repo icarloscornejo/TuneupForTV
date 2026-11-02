@@ -40,10 +40,20 @@ class SnapshotLoaderTest {
     }
 
     @Test
-    fun everythingIsReadInASingleRoundTrip() {
+    fun aProbeLetsTheKeyInAndThenEverythingIsReadInASingleRoundTrip() {
         val client = fake()
-        connect(client)
-        assertEquals(1, client.sent.size)
+        var sentWhenAccepted: Int? = null
+        runBlocking { SnapshotLoader(client).connect(onKeyAccepted = { sentWhenAccepted = client.sent.size }) }
+        assertEquals(1, sentWhenAccepted)
+        assertEquals(listOf(Commands.probeSerial().line, Commands.readDevice().line), client.sent)
+    }
+
+    @Test
+    fun aDeviceThatNeverLetsTheKeyInIsNeverReportedAsAccepted() {
+        val client = fake().apply { failure = DeviceFailure.Timeout }
+        var accepted = false
+        assertThrows(DeviceException::class.java) { runBlocking { SnapshotLoader(client).connect(onKeyAccepted = { accepted = true }) } }
+        assertFalse(accepted)
     }
 
     @Test

@@ -30,6 +30,7 @@ import com.prototype.tuneupfortv.ui.AppActions
 import com.prototype.tuneupfortv.ui.AppLanguage
 import com.prototype.tuneupfortv.ui.AppUiState
 import com.prototype.tuneupfortv.ui.BatchResult
+import com.prototype.tuneupfortv.ui.BatchVerdict
 import com.prototype.tuneupfortv.ui.DebloatPhase
 import com.prototype.tuneupfortv.ui.DebloatTab
 import com.prototype.tuneupfortv.ui.DebloatUi
@@ -37,7 +38,11 @@ import com.prototype.tuneupfortv.ui.DebloatWizard
 import com.prototype.tuneupfortv.ui.LauncherUi
 import com.prototype.tuneupfortv.ui.Screen
 import com.prototype.tuneupfortv.ui.StepStatus
+import com.prototype.tuneupfortv.ui.UpdateInstallStart
+import com.prototype.tuneupfortv.ui.UpdateProblem
+import com.prototype.tuneupfortv.ui.UpdateUi
 import com.prototype.tuneupfortv.ui.ViewMode
+import com.prototype.tuneupfortv.ui.batchVerdict
 import com.prototype.tuneupfortv.ui.isInProcesses
 import java.io.IOException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -67,6 +72,7 @@ private data class LocalState(
     val selection: Set<String> = emptySet(),
     val debloat: DebloatUi = DebloatUi(),
     val launcher: LauncherUi = LauncherUi(),
+    val update: UpdateUi = UpdateUi(),
 ) {
     private val onProcesses: Boolean get() = backStack.isInProcesses()
 
@@ -90,22 +96,35 @@ class AppViewModel(
     private val fetchLauncherRelease: suspend () -> LauncherRelease? = { null },
     /** The APK of that release, checked against its published hash, or null when it cannot be had. */
     private val downloadLauncher: suspend (LauncherRelease) -> LauncherApk? = { null },
+    /** The latest release of Tuneup itself on GitHub, or null when it cannot be reached. */
+    private val fetchAppRelease: suspend () -> LauncherRelease? = { null },
+    /** Downloads that release and checks it against its published hash; false when it cannot be had. */
+    private val downloadAppUpdate: suspend (LauncherRelease) -> Boolean = { false },
+    /** Hands the downloaded file to the system installer. The owner is then asked to confirm. */
+    private val startAppUpdateInstall: suspend (LauncherRelease) -> UpdateInstallStart = { UpdateInstallStart.FAILED },
+    /** What is running now, so a release can be told apart as newer. */
+    installedVersionName: String = "",
+    installedVersionCode: Long = 0,
 ) : ViewModel(), AppActions {
-    private val localState: MutableStateFlow<LocalState> = MutableStateFlow(LocalState(settingsStorage.load()))
+    private val localState: MutableStateFlow<LocalState> =
+        MutableStateFlow(LocalState(settingsStorage.load(), update = UpdateUi(installedVersion = installedVersionName, installedCode = installedVersionCode)))
     private var connectJob: Job? = null
 
     val uiState: StateFlow<AppUiState> =
         combine(localState, session.state) { local, sessionState ->
-            AppUiState(local.settings, local.settingsSaveFailed, local.backStack, sessionState, local.filter, local.selectedPackage, local.action, local.selecting, local.selection, local.debloat, local.launcher)
+            AppUiState(local.settings, local.settingsSaveFailed, local.backStack, sessionState, local.filter, local.selectedPackage, local.action, local.selecting, local.selection, local.debloat, local.launcher, local.update)
         }.stateIn(
             viewModelScope,
             SharingStarted.Eagerly,
-            AppUiState(localState.value.settings, false, localState.value.backStack, session.state.value, localState.value.filter, null, ActionUi.None, false, emptySet()),
+            AppUiState(localState.value.settings, false, localState.value.backStack, session.state.value, localState.value.filter, null, ActionUi.None, false, emptySet(), update = localState.value.update),
         )
 
     init {
         // From the second launch on there is no intro: connect right away and land on Home.
-        if (localState.value.settings.noticeAccepted) connect()
+        if (localState.value.settings.noticeAccepted) {
+            connect()
+            checkUpdate(silent = true)
+        }
         // The bundled lists are small; read them once so Home can say how many apply to this TV.
         viewModelScope.launch {
             val lists = loadDebloatLists()
@@ -163,7 +182,64 @@ class AppViewModel(
     }
 
     /** The notice is the first step of the intro: once accepted, the app connects by itself. */
-    override fun acceptNotice() = saveSettings(localState.value.settings.copy(noticeAccepted = true), onSaved = ::connect)
+    override fun acceptNotice() =
+        saveSettings(localState.value.settings.copy(noticeAccepted = true), onSaved = {
+            connect()
+            checkUpdate(silent = true)
+        })
+
+    // region updating Tuneup itself
+
+    override fun checkForUpdate() = checkUpdate(silent = false)
+
+    /** [silent]: the look at start says nothing when GitHub cannot be reached; the one the owner asks for does. */
+    private fun checkUpdate(silent: Boolean) {
+        val before = localState.getAndUpdate { local -> if (local.update.checking) local else local.copy(update = local.update.copy(checking = true, couldNotCheck = false)) }
+        if (before.update.checking) return
+        viewModelScope.launch {
+            val release = fetchAppRelease()
+            localState.update { local ->
+                val current = local.update
+                local.copy(
+                    update = when {
+                        release == null -> current.copy(checking = false, couldNotCheck = !silent)
+                        else -> current.copy(checking = false, checked = true, available = release.takeIf { it.versionCode > current.installedCode })
+                    },
+                )
+            }
+        }
+    }
+
+    /** Whether something is changing the TV or about to: the app must not be replaced in the middle of it. */
+    private fun LocalState.busy(): Boolean =
+        debloat.running || launcher.running || action is ActionUi.Running || action is ActionUi.RunningBatch || action is ActionUi.ClosingAll
+
+    override fun installUpdate() {
+        val release = localState.value.update.available ?: return
+        // Checked and set in one step, so a repeated press of the remote cannot start a second download.
+        val before = localState.getAndUpdate { local -> if (local.busy() || local.update.installing) local else local.copy(update = local.update.copy(installing = true, problem = null)) }
+        if (before.busy() || before.update.installing) return
+        viewModelScope.launch {
+            val problem: UpdateProblem? =
+                if (!downloadAppUpdate(release)) {
+                    UpdateProblem.DOWNLOAD
+                } else {
+                    // The permission and the hand-over happen while no change to the TV can start, so none is cut in half.
+                    val start = session.whileTvIsIdle {
+                        session.allowInstalls()
+                        startAppUpdateInstall(release)
+                    } ?: startAppUpdateInstall(release)
+                    when (start) {
+                        UpdateInstallStart.STARTED -> null
+                        UpdateInstallStart.NEEDS_PERMISSION -> UpdateProblem.NEEDS_PERMISSION
+                        UpdateInstallStart.FAILED -> UpdateProblem.FAILED
+                    }
+                }
+            localState.update { it.copy(update = it.update.copy(installing = false, problem = problem)) }
+        }
+    }
+
+    // endregion
 
     override fun dismissUntested(model: String) {
         val settings = localState.value.settings
@@ -237,6 +313,8 @@ class AppViewModel(
 
     /** "Keep the current state": closes an open entry without sending anything, after seeing the device. */
     override fun acceptEntry(entryId: String) {
+        // Kept from the report of a batch that stopped on this change: the report stays, so Continue is still there.
+        val batch = (localState.value.action as? ActionUi.BatchDone)?.result?.takeIf { (it.stoppedBecause as? ActionOutcome.Finished)?.entry?.id == entryId }
         viewModelScope.launch {
             val result = session.accept(entryId)
             // A change kept from the debloat report is settled: the report goes away.
@@ -253,6 +331,7 @@ class AppViewModel(
                     result != AcceptResult.ACCEPTED -> ActionUi.AcceptRefused(result)
                     // From the review list, stay there while something is still open; from a result, just close.
                     inReview && stillOpen -> ActionUi.Review
+                    batch != null -> ActionUi.BatchDone(batch)
                     else -> ActionUi.None
                 },
             )
@@ -300,6 +379,93 @@ class AppViewModel(
         }
     }
 
+    /**
+     * Puts back what the batch on screen changed: only what failed, or everything. The report is updated in place (what
+     * is back leaves it), so the other button still covers the rest and an undo is never offered for an undo. Undoing a
+     * restore batch puts each package back where its journal entry says it was (turned off, or removed).
+     */
+    override fun restoreBatch(onlyFailed: Boolean) {
+        val result = (localState.value.action as? ActionUi.BatchDone)?.result ?: return
+        val connected = session.state.value as? SessionState.Connected ?: return
+        val ids = (if (onlyFailed) result.failedToUndo else result.changed).asReversed()
+        if (ids.isEmpty()) return
+        val groups: Map<ActionKind, List<String>> =
+            if (result.kind == ActionKind.RESTORE) {
+                ids.groupBy { id ->
+                    val previous = connected.journalEntries.firstOrNull { it.id == result.entries[id] }?.previous
+                    if (previous != null && !previous.installed) ActionKind.UNINSTALL else ActionKind.DISABLE
+                }
+            } else {
+                mapOf(ActionKind.RESTORE to ids)
+            }
+        // Checked and set in one step, so a repeated press of the remote cannot start a second run.
+        val before = localState.getAndUpdate { local -> if (local.action is ActionUi.BatchDone) local.copy(action = ActionUi.RunningBatch(result.kind, 0, ids.size)) else local }
+        if (before.action !is ActionUi.BatchDone) return
+        viewModelScope.launch {
+            val back = mutableSetOf<String>()
+            var attempted = 0
+            for ((kind, group) in groups) {
+                runBatch(kind, group, 0, stopOnUnclean = false, onStart = {}) { packageId, outcome, _ ->
+                    attempted++
+                    // Already as it should be counts as back: nothing was left to do.
+                    val settled = batchVerdict(outcome) == BatchVerdict.SUCCEEDED ||
+                        (outcome as? ActionOutcome.Rejected)?.reason in setOf(RejectReason.NOTHING_TO_RESTORE, RejectReason.ALREADY_DISABLED, RejectReason.NOT_INSTALLED)
+                    if (settled) back += packageId
+                    setAction(ActionUi.RunningBatch(result.kind, attempted, ids.size))
+                }
+            }
+            // The change that stopped the batch is settled once its package is back, as in the wizard.
+            val stopEntry = result.stoppedBecause as? ActionOutcome.Finished
+            val stopClosed = stopEntry != null && stopEntry.entry.packageId in back && session.accept(stopEntry.entry.id) == AcceptResult.ACCEPTED
+            setAction(
+                ActionUi.BatchDone(
+                    result.copy(
+                        changed = result.changed - back,
+                        failed = result.failed - back,
+                        stoppedAt = if (stopClosed) null else result.stoppedAt,
+                        stoppedBecause = if (stopClosed) null else result.stoppedBecause,
+                        undone = result.undone + back.size,
+                        undoFailed = ids.size - back.size,
+                    ),
+                ),
+            )
+            session.refresh()
+        }
+    }
+
+    /** Goes on with the packages the batch never reached, once nothing is left open. The report keeps what was already done. */
+    override fun continueBatch() {
+        val result = (localState.value.action as? ActionUi.BatchDone)?.result ?: return
+        val connected = session.state.value as? SessionState.Connected ?: return
+        if (result.untriedIds.isEmpty() || connected.openEntries.isNotEmpty()) return
+        val plan = planBatch(result.kind, result.untriedIds.toSet(), connected)
+        val before = localState.getAndUpdate { local -> if (local.action is ActionUi.BatchDone) local.copy(action = ActionUi.RunningBatch(result.kind, 0, plan.runnable.size)) else local }
+        if (before.action !is ActionUi.BatchDone) return
+        viewModelScope.launch {
+            val next = runBatch(result.kind, result.untriedIds.filter { it in plan.runnable }, plan.skipped.size, stopOnUnclean = true, onStart = {}) { _, _, attempted ->
+                setAction(ActionUi.RunningBatch(result.kind, attempted, plan.runnable.size))
+            }
+            setAction(
+                ActionUi.BatchDone(
+                    BatchResult(
+                        kind = result.kind,
+                        succeeded = result.succeeded + next.succeeded,
+                        skipped = result.skipped + next.skipped,
+                        stoppedAt = next.stoppedAt,
+                        stoppedBecause = next.stoppedBecause,
+                        entries = result.entries + next.entries,
+                        changed = result.changed + next.changed,
+                        failed = result.failed + next.failed,
+                        untriedIds = next.untriedIds,
+                        undone = result.undone,
+                        reopened = result.reopened + next.reopened,
+                    ),
+                ),
+            )
+            session.refresh()
+        }
+    }
+
     private fun planBatch(kind: ActionKind, packageIds: Set<String>, connected: SessionState.Connected) =
         BatchPlanner.plan(
             kind,
@@ -310,9 +476,11 @@ class AppViewModel(
         )
 
     /**
-     * Runs [kind] on each package, one at a time through the full safe path. With [stopOnUnclean] the first change that
-     * is not clean ends the run and the rest are left untried; without it every package gets its turn (a restore never
-     * waits on another). [onStart] and [onStep] let a screen follow along.
+     * Runs [kind] on each package, one at a time through the full safe path. What each outcome means is in
+     * [batchVerdict]: a package the TV refused is skipped over and the run goes on, and a lost connection leaves the
+     * package pending. With [stopOnUnclean] a change that leaves something open ends the run and the rest are left
+     * untried (the executor would refuse them anyway); without it every package gets its turn (a restore never waits on
+     * another). [onStart] and [onStep] let a screen follow along.
      */
     private suspend fun runBatch(
         kind: ActionKind,
@@ -327,23 +495,41 @@ class AppViewModel(
         var stoppedAt: String? = null
         var stoppedBecause: ActionOutcome? = null
         var attempted = 0
+        val entries = mutableMapOf<String, String>()
+        val changed = mutableListOf<String>()
+        val failed = linkedMapOf<String, ActionOutcome?>()
+        val untriedIds = mutableListOf<String>()
+        var reopened = 0
         for (packageId in packageIds) {
             onStart(packageId)
             val outcome = session.perform(packageId, kind)
             attempted++
-            when {
-                outcome == ActionOutcome.ForceStopped || (outcome is ActionOutcome.Finished && outcome.isClean) -> succeeded++
+            val entry = (outcome as? ActionOutcome.Finished)?.entry
+            if (entry != null) {
+                entries[packageId] = entry.id
+                if (entry.status != EntryStatus.FAILED) changed += packageId
+            }
+            if (outcome == ActionOutcome.ForceStopRelaunched || outcome == ActionOutcome.ForceStopStillRunning) reopened++
+            when (batchVerdict(outcome)) {
+                BatchVerdict.SUCCEEDED -> succeeded++
                 // Changed since the last read: the guard says no now, nothing was touched, the rest can go on.
-                outcome is ActionOutcome.Rejected -> skipped++
-                stopOnUnclean && stoppedAt == null -> {
-                    stoppedAt = packageId
-                    stoppedBecause = outcome
+                BatchVerdict.SKIPPED -> skipped++
+                BatchVerdict.UNTRIED -> untriedIds += packageId
+                BatchVerdict.FAILED -> failed[packageId] = outcome
+                BatchVerdict.STOP -> {
+                    // The change that stopped the run is also the first one "Undo the failed" has to cover.
+                    failed[packageId] = outcome
+                    if (stopOnUnclean) {
+                        stoppedAt = packageId
+                        stoppedBecause = outcome
+                    }
                 }
             }
             onStep(packageId, outcome, attempted)
             if (stoppedAt != null) break
         }
-        return BatchResult(kind, succeeded, skipped, packageIds.size - attempted, stoppedAt, stoppedBecause)
+        untriedIds += packageIds.drop(attempted)
+        return BatchResult(kind, succeeded, skipped, stoppedAt, stoppedBecause, entries, changed, failed, untriedIds, reopened = reopened)
     }
 
     // endregion
@@ -539,12 +725,18 @@ class AppViewModel(
     override fun clearDebloatStop() = localState.update { it.copy(debloat = it.debloat.copy(stopOutcome = null)) }
 
     /** Disables the ticked packages one at a time, each through the full safe path, and stops at the first change that is not clean. */
-    override fun startDebloat() {
+    override fun startDebloat() = runDisable(continuing = false)
+
+    /** After a stop: goes on with the packages the run never reached, keeping what it already did and can still undo. */
+    override fun continueDebloat() = runDisable(continuing = true)
+
+    private fun runDisable(continuing: Boolean) {
         val connected = session.state.value as? SessionState.Connected ?: return
         if (connected.openEntries.isNotEmpty()) return
         val current = localState.value.debloat
         val list = current.openedList ?: return
-        val ordered = list.groups.flatMap { it.entries }.map { it.packageId }.distinct().filter { it in current.chosen }
+        val wanted = if (continuing) current.statuses.filterValues { it == StepStatus.Untried }.keys else current.chosen
+        val ordered = list.groups.flatMap { it.entries }.map { it.packageId }.distinct().filter { it in wanted }
         if (ordered.isEmpty()) return
         val plan = planBatch(ActionKind.DISABLE, ordered.toSet(), connected)
         val runOrder = ordered.filter { it in plan.runnable }
@@ -554,17 +746,19 @@ class AppViewModel(
                 local
             } else {
                 val statuses = ordered.associateWith { packageId -> plan.skipped[packageId]?.let { StepStatus.Skipped(it) } ?: StepStatus.Pending }
-                local.copy(debloat = local.debloat.copy(running = true, confirming = false, phase = DebloatPhase.DISABLING, statuses = statuses, stopOutcome = null, done = 0, total = runOrder.size))
+                // Continuing keeps the report of the packages already handled.
+                local.copy(debloat = local.debloat.copy(running = true, confirming = false, phase = DebloatPhase.DISABLING, statuses = if (continuing) local.debloat.statuses + statuses else statuses, stopOutcome = null, done = 0, total = runOrder.size))
             }
         }
         if (before.debloat.running) return
         viewModelScope.launch {
             val result = runBatch(ActionKind.DISABLE, runOrder, plan.skipped.size, stopOnUnclean = true, onStart = { setStep(it, StepStatus.Working) }) { packageId, outcome, attempted ->
                 val entry = (outcome as? ActionOutcome.Finished)?.entry
-                val status = when {
-                    outcome is ActionOutcome.Finished && outcome.isClean -> StepStatus.Done
-                    outcome is ActionOutcome.Rejected -> StepStatus.Skipped(outcome.reason)
-                    else -> StepStatus.Failed(outcome)
+                val status = when (batchVerdict(outcome)) {
+                    BatchVerdict.SUCCEEDED -> StepStatus.Done
+                    BatchVerdict.SKIPPED -> StepStatus.Skipped((outcome as ActionOutcome.Rejected).reason)
+                    BatchVerdict.UNTRIED -> StepStatus.Untried
+                    BatchVerdict.STOP, BatchVerdict.FAILED -> StepStatus.Failed(outcome)
                 }
                 localState.update { local ->
                     val ui = local.debloat
@@ -582,7 +776,7 @@ class AppViewModel(
             }
             localState.update { local ->
                 val ui = local.debloat
-                val untried = runOrder.takeLast(result.untried).associateWith { StepStatus.Untried }
+                val untried = result.untriedIds.associateWith { StepStatus.Untried }
                 local.copy(debloat = ui.copy(running = false, phase = null, statuses = ui.statuses + untried, stopOutcome = result.stoppedBecause))
             }
             session.refresh()
@@ -593,8 +787,20 @@ class AppViewModel(
      * Undoes this run, the last change first (it is the likeliest to have hurt). Each package goes straight to the
      * guarded restore, which reads the TV live: the snapshot may be older than the run. No package waits on another.
      */
-    override fun restoreDebloat() {
-        val ids = localState.value.debloat.toRestore.asReversed()
+    override fun restoreDebloat() = restore(localState.value.debloat.toRestore.asReversed())
+
+    /**
+     * Undoes only the packages whose change did not come out clean; the ones that went fine stay disabled. When the run
+     * was stopped by a change that left an entry open, that entry is closed once its package is back, so the barrier
+     * lifts and Continue can go on.
+     */
+    override fun restoreFailedDebloat() {
+        val ui = localState.value.debloat
+        restore(ui.toRestore.asReversed().filter { ui.statuses[it] is StepStatus.Failed }, ui.stopOutcome as? ActionOutcome.Finished, keepPending = true)
+    }
+
+    /** [keepPending]: packages the run never reached stay on the report to Continue with, even if nothing is left to undo. */
+    private fun restore(ids: List<String>, stoppedBy: ActionOutcome.Finished? = null, keepPending: Boolean = false) {
         if (ids.isEmpty()) return
         val before = localState.getAndUpdate { local ->
             if (local.debloat.running) {
@@ -613,14 +819,17 @@ class AppViewModel(
                     local.copy(debloat = ui.copy(statuses = ui.statuses + (packageId to status), done = attempted, toRestore = if (status == StepStatus.Restored) ui.toRestore - packageId else ui.toRestore))
                 }
             }
+            // The change that stopped the run is settled once its package is back. If it is not, the stop stays on screen.
+            val stillOpen = stoppedBy != null && !(localState.value.debloat.statuses[stoppedBy.entry.packageId] == StepStatus.Restored && session.accept(stoppedBy.entry.id) == AcceptResult.ACCEPTED)
             localState.update { local ->
                 val ui = local.debloat
-                // Everything is back as it was: the screen starts over, ready for another run.
-                if (ui.toRestore.isEmpty()) {
+                val stop = if (stillOpen) stoppedBy else null
+                // Everything is back as it was and nothing is waiting to continue: the screen starts over, ready for another run.
+                if (ui.toRestore.isEmpty() && !(keepPending && ui.statuses.values.any { it == StepStatus.Untried })) {
                     val suggested = ui.openedList?.entries?.filter { it.suggested }?.map { it.packageId }?.toSet().orEmpty()
-                    local.copy(debloat = ui.copy(running = false, phase = null, statuses = emptyMap(), stopOutcome = null, runEntries = emptyMap(), chosen = suggested, done = 0, total = 0))
+                    local.copy(debloat = ui.copy(running = false, phase = null, statuses = emptyMap(), stopOutcome = stop, runEntries = emptyMap(), chosen = suggested, done = 0, total = 0))
                 } else {
-                    local.copy(debloat = ui.copy(running = false, phase = null))
+                    local.copy(debloat = ui.copy(running = false, phase = null, stopOutcome = stop))
                 }
             }
             session.refresh()
@@ -665,9 +874,15 @@ class AppViewModel(
         viewModelScope.launch {
             var stopped = 0
             var failed = 0
+            var reopened = 0
             for ((index, packageId) in targets.withIndex()) {
                 when (val outcome = session.perform(packageId, ActionKind.FORCE_STOP)) {
                     ActionOutcome.ForceStopped -> stopped++
+                    // Stopped as asked, but it came back (or never died): told apart so the report does not claim it is closed.
+                    ActionOutcome.ForceStopRelaunched, ActionOutcome.ForceStopStillRunning -> {
+                        stopped++
+                        reopened++
+                    }
                     // The connection is gone: the rest were not tried, and they are not counted as stopped.
                     null, is ActionOutcome.DeviceError -> {
                         failed += targets.size - index
@@ -677,7 +892,7 @@ class AppViewModel(
                 }
                 setAction(ActionUi.ClosingAll(index + 1, targets.size))
             }
-            setAction(ActionUi.ClosedAll(stopped, failed))
+            setAction(ActionUi.ClosedAll(stopped, failed, reopened))
             session.refresh()
         }
     }

@@ -4,10 +4,13 @@ import com.prototype.tuneupfortv.ExecutorHarness.Companion.PERSISTENT
 import com.prototype.tuneupfortv.ExecutorHarness.Companion.SECOND_USER_APP
 import com.prototype.tuneupfortv.ExecutorHarness.Companion.USER_APP
 import com.prototype.tuneupfortv.adb.AdbDeviceGateway
+import com.prototype.tuneupfortv.adb.Commands
 import com.prototype.tuneupfortv.adb.FakeAdbClient
 import com.prototype.tuneupfortv.device.DebloatEntry
 import com.prototype.tuneupfortv.device.DebloatGroup
 import com.prototype.tuneupfortv.device.DebloatList
+import com.prototype.tuneupfortv.device.DeviceSerial
+import com.prototype.tuneupfortv.device.PackageName
 import com.prototype.tuneupfortv.safety.ActionOutcome
 import com.prototype.tuneupfortv.safety.RejectReason
 import com.prototype.tuneupfortv.session.DeviceSession
@@ -202,6 +205,50 @@ class DebloatTest {
         viewModel.settled()
         val ui = viewModel.uiState.value.debloat
         assertTrue(USER_APP in ui.toRestore && SECOND_USER_APP in ui.toRestore)
+    }
+
+    @Test
+    fun aPackageTheTvRefusesIsSkippedWithItsErrorAndTheRunGoesOn() {
+        val viewModel = viewModel()
+        val line = Commands.disableUser(PackageName(USER_APP), DeviceSerial(fake.identity.serial)).line
+        fake.exitCodeOverrides[line] = 255
+        fake.stderrOverrides[line] = "SecurityException: Shell cannot change component state"
+        viewModel.askDebloat()
+        viewModel.startDebloat()
+        viewModel.settled()
+        val ui = viewModel.uiState.value.debloat
+        assertTrue(ui.statuses[USER_APP] is StepStatus.Failed)
+        assertEquals(StepStatus.Done, ui.statuses[SECOND_USER_APP])
+        assertNull("a refusal does not stop the run", ui.stopOutcome)
+        assertEquals("what the TV refused has nothing to undo", listOf(SECOND_USER_APP), ui.toRestore)
+        val entry = viewModel.uiState.value.connected!!.journalEntries.first { it.packageId == USER_APP }
+        assertTrue(entry.failureDetail!!.contains("SecurityException: Shell cannot change component state"))
+    }
+
+    @Test
+    fun undoingTheFailedOneClosesTheStopAndContinueDisablesTheRest() {
+        val viewModel = viewModel()
+        fake.onMutation = { _, _ -> fake.pids["com.sony.dtv.sonysystemservice"] = listOf(4242) }
+        viewModel.askDebloat()
+        viewModel.startDebloat()
+        viewModel.settled()
+        fake.onMutation = null
+        assertEquals(StepStatus.Untried, viewModel.uiState.value.debloat.statuses[SECOND_USER_APP])
+
+        viewModel.restoreFailedDebloat()
+        viewModel.settled()
+        eventually("the stop is closed") { viewModel.uiState.value.connected?.openEntries.orEmpty().isEmpty() }
+        val afterUndo = viewModel.uiState.value.debloat
+        assertEquals(StepStatus.Restored, afterUndo.statuses[USER_APP])
+        assertNull(afterUndo.stopOutcome)
+        assertEquals("the pending package is kept to continue with", StepStatus.Untried, afterUndo.statuses[SECOND_USER_APP])
+
+        viewModel.continueDebloat()
+        viewModel.settled()
+        val afterContinue = viewModel.uiState.value.debloat
+        assertEquals(StepStatus.Done, afterContinue.statuses[SECOND_USER_APP])
+        assertEquals(StepStatus.Restored, afterContinue.statuses[USER_APP])
+        assertEquals(listOf(SECOND_USER_APP), afterContinue.toRestore)
     }
 
     @Test

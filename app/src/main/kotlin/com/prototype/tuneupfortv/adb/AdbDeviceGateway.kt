@@ -8,8 +8,10 @@ import com.prototype.tuneupfortv.device.DeviceProfile
 import com.prototype.tuneupfortv.device.DeviceSerial
 import com.prototype.tuneupfortv.device.DeviceSnapshot
 import com.prototype.tuneupfortv.device.LoadedDevice
+import com.prototype.tuneupfortv.device.PackageName
 import com.prototype.tuneupfortv.safety.ActionExecutor
 import com.prototype.tuneupfortv.safety.Journal
+import com.prototype.tuneupfortv.safety.SendResult
 import com.prototype.tuneupfortv.safety.SwapRecordStore
 import kotlinx.coroutines.sync.Mutex
 import com.prototype.tuneupfortv.session.DeviceGateway
@@ -32,7 +34,8 @@ class AdbDeviceGateway(
     /** The serial of the device read at connect time: every later read must come from the same one. */
     private var knownSerial: String? = null
 
-    override suspend fun connect(): LoadedDevice = loader.connect().also { knownSerial = it.identity.serial }
+    override suspend fun connect(onKeyAccepted: () -> Unit): LoadedDevice =
+        loader.connect(onKeyAccepted = onKeyAccepted).also { knownSerial = it.identity.serial }
 
     override suspend fun reload(expected: DeviceIdentity): DeviceSnapshot = loader.reload(expected)
 
@@ -74,6 +77,7 @@ class AdbDeviceGateway(
             sender = AdbPackageCommandSender(client, serial),
             watch = AdbHealthWatch(client, identity.serial, pause, clock),
             dispatcher = executorDispatcher,
+            pause = pause,
             journal = journal,
             identity = identity,
             profile = profile,
@@ -85,11 +89,19 @@ class AdbDeviceGateway(
         )
     }
 
+    override suspend fun allowInstallsFor(ownPackage: String): Boolean {
+        // No reliable serial, no fence, no write: the same rule as every other change.
+        val serial = knownSerial?.let { DeviceSerial.orNull(it) } ?: return false
+        val packageName = PackageName.orNull(ownPackage) ?: return false
+        return client.sendMutation(Commands.allowInstalls(packageName, serial), INSTALL_PERMISSION_DEADLINE) == SendResult.Ran
+    }
+
     override fun close() = client.close()
 
     private companion object {
         const val UNUSABLE_SERIAL: String = "unusable"
         val HEALTH_DEADLINE = 15.seconds
+        val INSTALL_PERMISSION_DEADLINE = 15.seconds
         const val CRASH_SAMPLE_SIZE: Int = 3
         const val CRASH_LINE_CHARS: Int = 160
     }

@@ -59,6 +59,8 @@ data class JournalEntry(
     /** While this is in the future, a late-landing command is still possible. */
     val settleUntilMillis: Long? = null,
     val acceptedState: PackageState? = null,
+    /** What the device printed when the command failed, as it said it. Null for entries written before this existed. */
+    val failureDetail: String? = null,
 ) {
     /**
      * Whether the device [live] state is where this change was going. An uninstall only needs the package gone for the

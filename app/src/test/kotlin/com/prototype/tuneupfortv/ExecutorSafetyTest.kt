@@ -267,6 +267,38 @@ class ExecutorSafetyTest {
     }
 
     @Test
+    fun aForceStopSaysWhetherTheAppStayedClosed() {
+        val harness = harness()
+        val fake = harness.fake
+        // The app dies and stays dead.
+        fake.pids[USER_APP] = listOf(100)
+        fake.onMutation = { id, _ -> fake.pids.remove(id) }
+        assertEquals(ActionOutcome.ForceStopped, harness.perform(USER_APP, ActionKind.FORCE_STOP))
+        // Something starts it again right away: a new pid.
+        fake.pids[USER_APP] = listOf(100)
+        fake.onMutation = { id, _ -> fake.pids[id] = listOf(200) }
+        assertEquals(ActionOutcome.ForceStopRelaunched, harness.perform(USER_APP, ActionKind.FORCE_STOP))
+        // The command said yes and the very same process is still there.
+        fake.pids[USER_APP] = listOf(100)
+        fake.onMutation = null
+        assertEquals(ActionOutcome.ForceStopStillRunning, harness.perform(USER_APP, ActionKind.FORCE_STOP))
+        // Not running before: nothing to compare, so no claim beyond "stopped".
+        fake.pids.remove(USER_APP)
+        assertEquals(ActionOutcome.ForceStopped, harness.perform(USER_APP, ActionKind.FORCE_STOP))
+    }
+
+    @Test
+    fun aFailedSendKeepsWhatTheTvPrinted() {
+        val harness = harness()
+        val line = Commands.disableUser(PackageName(USER_APP), DeviceSerial(harness.fake.identity.serial)).line
+        harness.fake.exitCodeOverrides[line] = 255
+        harness.fake.stderrOverrides[line] = "SecurityException: not allowed"
+        val entry = (harness.perform(USER_APP, ActionKind.DISABLE) as ActionOutcome.Finished).entry
+        assertEquals(EntryStatus.FAILED, entry.status)
+        assertEquals("exit 255: SecurityException: not allowed", entry.failureDetail)
+    }
+
+    @Test
     fun aForceStopThatFailsIsReported() {
         val harness = harness()
         harness.fake.exitCodeOverrides[Commands.forceStop(PackageName(USER_APP), DeviceSerial(harness.fake.identity.serial)).line] = 1

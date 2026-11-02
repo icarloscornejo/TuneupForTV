@@ -31,6 +31,11 @@ class MainActivity : ComponentActivity() {
                     loadDebloatLists = container::loadDebloatLists,
                     fetchLauncherRelease = container::fetchLauncherRelease,
                     downloadLauncher = container::downloadLauncher,
+                    fetchAppRelease = container::fetchAppRelease,
+                    downloadAppUpdate = container::downloadAppUpdate,
+                    startAppUpdateInstall = container::startAppUpdateInstall,
+                    installedVersionName = container.installedVersionName,
+                    installedVersionCode = container.installedVersionCode,
                 )
             }
         }

@@ -71,6 +71,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -95,6 +96,9 @@ import com.prototype.tuneupfortv.safety.ForceCloseAll
 import com.prototype.tuneupfortv.safety.LivePackage
 import com.prototype.tuneupfortv.session.SessionProblem
 import com.prototype.tuneupfortv.session.SessionState
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.delay
 
 @Composable
 fun TuneupApp(state: AppUiState, actions: AppActions) {
@@ -246,7 +250,7 @@ private fun IntroScreen(session: SessionState, actions: AppActions) {
         SessionState.Idle -> SplashScreen(stringResource(R.string.loading), hint = null)
         is SessionState.Connected -> Unit
         // The first connection can sit here until the user answers the prompt on the device.
-        SessionState.Connecting -> SplashScreen(stringResource(R.string.connecting), hint = stringResource(R.string.connecting_hint))
+        is SessionState.Connecting -> ConnectingScreen(session.keyAccepted)
         SessionState.NeedsAuthorization -> CenterScreen(Tone.INFO, "↗", stringResource(R.string.auth_title), kicker = stringResource(R.string.kicker_auth)) {
             Text(stringResource(R.string.auth_body), style = MaterialTheme.typography.bodyLarge, color = palette.muted)
             IntroActions(actions)
@@ -257,6 +261,34 @@ private fun IntroScreen(session: SessionState, actions: AppActions) {
         }
     }
 }
+
+/**
+ * "Allow USB debugging?" is a window of its own, so while it is up this one has no focus. Keeping the focus for
+ * [PROMPT_GRACE] before the key is accepted means the TV never showed it (its ADB can get stuck on a lost prompt,
+ * and only a restart clears it). The connection keeps waiting underneath: a prompt that shows up late still works.
+ */
+@Composable
+private fun ConnectingScreen(keyAccepted: Boolean) {
+    val focused = LocalWindowInfo.current.isWindowFocused
+    var promptMissing by remember { mutableStateOf(false) }
+    LaunchedEffect(focused, keyAccepted) {
+        promptMissing = false
+        if (focused && !keyAccepted) {
+            delay(PROMPT_GRACE)
+            promptMissing = true
+        }
+    }
+    when {
+        keyAccepted -> SplashScreen(stringResource(R.string.loading), hint = null)
+        promptMissing -> CenterScreen(Tone.WARNING, "!", stringResource(R.string.prompt_missing_title), kicker = stringResource(R.string.kicker_auth)) {
+            Text(stringResource(R.string.prompt_missing_body), style = MaterialTheme.typography.bodyLarge, color = TuneupTheme.colors.muted)
+        }
+        else -> SplashScreen(stringResource(R.string.connecting), hint = stringResource(R.string.connecting_hint))
+    }
+}
+
+/** Long enough for a slow TV to make the key and show the prompt, short enough not to look frozen. */
+private val PROMPT_GRACE: Duration = 8.seconds
 
 /**
  * What the app looks like while it starts: the mark, the name, and always a spinner with what is going on. It is the
@@ -350,7 +382,8 @@ private fun HomeScreen(state: AppUiState, connected: SessionState.Connected, act
         0 -> stringResource(R.string.home_fact_debloat_none)
         else -> stringResource(R.string.home_fact_debloat, suggested)
     }
-    val settingsFact = stringResource(languageLabel(state.language))
+    // A newer Tuneup found at start is told here, on the card that leads to the place where it is installed.
+    val settingsFact = state.update.available?.let { stringResource(R.string.home_update_available, it.versionName) } ?: stringResource(languageLabel(state.language))
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.vp)) {
         BrandBar(snapshot.identity.model)
         HomeNotices(connected, state.settings.dismissedUntestedModels, actions)
@@ -1373,6 +1406,39 @@ internal fun ChoiceRow(
     }
 }
 
+/** The version running, a way to look for a newer one, and to install it when there is. */
+@Composable
+private fun UpdatesColumn(update: UpdateUi, actions: AppActions, modifier: Modifier) {
+    val palette = TuneupTheme.colors
+    val status: String? = when {
+        update.installing -> stringResource(R.string.updates_installing)
+        update.checking -> stringResource(R.string.updates_checking)
+        update.available != null -> stringResource(R.string.updates_available, update.available.versionName)
+        update.checked -> stringResource(R.string.updates_up_to_date)
+        else -> null
+    }
+    val problem: String? = when {
+        update.problem == UpdateProblem.DOWNLOAD -> stringResource(R.string.updates_problem_download)
+        update.problem == UpdateProblem.NEEDS_PERMISSION -> stringResource(R.string.updates_problem_permission)
+        update.problem == UpdateProblem.FAILED -> stringResource(R.string.updates_problem_failed)
+        update.couldNotCheck -> stringResource(R.string.updates_could_not_check)
+        else -> null
+    }
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.vp)) {
+        Text(stringResource(R.string.updates_title), style = MaterialTheme.typography.titleLarge)
+        Text(stringResource(R.string.updates_version, update.installedVersion), style = subtitleStyle(), color = palette.muted, modifier = Modifier.padding(bottom = 6.vp))
+        if (status != null) Text(status, style = MaterialTheme.typography.titleMedium)
+        if (update.available != null && !update.installing) Text(stringResource(R.string.updates_confirm_hint), style = subtitleStyle(), color = palette.muted)
+        if (problem != null) Banner(problem, Tone.WARNING, Modifier)
+        Row(horizontalArrangement = Arrangement.spacedBy(16.vp)) {
+            FocusButton(stringResource(R.string.updates_check), onClick = actions::checkForUpdate, enabled = !update.checking && !update.installing)
+            if (update.available != null) {
+                FocusButton(stringResource(R.string.updates_install, update.available.versionName), onClick = actions::installUpdate, enabled = !update.installing, style = ButtonStyle.PRIMARY)
+            }
+        }
+    }
+}
+
 /** Settings as one centered list, like the TV's own: a section, then its rows. */
 @Composable
 private fun SettingsScreen(state: AppUiState, connected: SessionState.Connected, actions: AppActions) {
@@ -1397,8 +1463,7 @@ private fun SettingsScreen(state: AppUiState, connected: SessionState.Connected,
                     ChoiceRow(stringResource(languageLabel(option)), subtitle, option == state.language, { actions.setLanguage(option) }, requestInitialFocus = option == state.language)
                 }
             }
-            // The right column is kept for what comes next: the language stays on the left half.
-            Spacer(Modifier.weight(1f))
+            UpdatesColumn(state.update, actions, Modifier.weight(1f))
         }
     }
 }

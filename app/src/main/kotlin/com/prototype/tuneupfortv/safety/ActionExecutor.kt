@@ -14,6 +14,7 @@ import java.util.UUID
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -29,6 +30,12 @@ sealed interface ActionOutcome {
 
     /** The app was stopped. A force stop leaves nothing to record or to watch: whoever asks for it knows what they want. */
     data object ForceStopped : ActionOutcome
+
+    /** The stop went through, but the app is running again with a new pid a moment later: something on the TV starts it. */
+    data object ForceStopRelaunched : ActionOutcome
+
+    /** The command said it stopped, yet the very same process is still running. */
+    data object ForceStopStillRunning : ActionOutcome
 
     /** The stop did not go through. [exitCode] is null when the answer never came. */
     data class ForceStopFailed(val exitCode: Int?) : ActionOutcome
@@ -69,6 +76,8 @@ class ActionExecutor(
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val nowMillis: () -> Long = System::currentTimeMillis,
     private val newId: () -> String = { UUID.randomUUID().toString() },
+    /** The wait before a force stop is checked, injected so tests do not wait in real time. */
+    private val pause: suspend (Long) -> Unit = { delay(it) },
     /** Shared by every session of the process: two executors must never work on the TV at the same time. */
     private val mutex: Mutex = Mutex(),
     private val swapStore: SwapRecordStore? = null,
@@ -173,10 +182,27 @@ class ActionExecutor(
         val live = readLive(packageName)
         val planned = ActionPlanner.plan(ActionKind.FORCE_STOP, live.live)
         if (planned is PlanResult.Rejected) return ActionOutcome.Rejected(planned.reason)
+        // Judged on two live reads of the process, never on a snapshot, so a late or failed refresh cannot give a false verdict.
+        val before = liveSource.pids(packageName)
         return when (val result = sender.send(Operation.FORCE_STOP, packageName)) {
-            SendResult.Ran -> ActionOutcome.ForceStopped
+            SendResult.Ran -> afterForceStop(packageName, before)
             is SendResult.Failed -> ActionOutcome.ForceStopFailed(result.exitCode)
             SendResult.NotSent, SendResult.Uncertain, SendResult.FenceRefused -> ActionOutcome.ForceStopFailed(null)
+        }
+    }
+
+    /**
+     * Whether the stop held. Nothing to compare (it was not running, or a read failed) keeps the plain answer: the
+     * command ran and the app is not claimed to be anything else.
+     */
+    private suspend fun afterForceStop(packageName: PackageName, before: List<Int>?): ActionOutcome {
+        if (before.isNullOrEmpty()) return ActionOutcome.ForceStopped
+        pause(RELAUNCH_CHECK_MILLIS)
+        val after = liveSource.pids(packageName) ?: return ActionOutcome.ForceStopped
+        return when {
+            after.isEmpty() -> ActionOutcome.ForceStopped
+            after.any { it in before } -> ActionOutcome.ForceStopStillRunning
+            else -> ActionOutcome.ForceStopRelaunched
         }
     }
 
@@ -246,7 +272,7 @@ class ActionExecutor(
                     )
                 SendResult.NotSent, is SendResult.Failed ->
                     return ActionOutcome.Finished(
-                        if (index == 0) journal.updateAfterSend(entry.id) { it.copy(status = EntryStatus.FAILED, uncertainSend = false, settleUntilMillis = null) }
+                        if (index == 0) journal.updateAfterSend(entry.id) { it.copy(status = EntryStatus.FAILED, uncertainSend = false, settleUntilMillis = null, failureDetail = describe(result)) }
                         else needsReview(entry, "a restore failed after its first step (${describe(result)})"),
                     )
             }
@@ -256,7 +282,7 @@ class ActionExecutor(
 
     private fun describe(result: SendResult): String =
         when (result) {
-            is SendResult.Failed -> "exit ${result.exitCode}"
+            is SendResult.Failed -> if (result.detail.isEmpty()) "exit ${result.exitCode}" else "exit ${result.exitCode}: ${result.detail}"
             else -> "not sent"
         }
 
@@ -343,6 +369,9 @@ class ActionExecutor(
     companion object {
         /** Three seconds are enough to see a crash loop: the vendor service that broke restarted every 1 to 2 s. */
         const val DEFAULT_WATCH_SECONDS: Int = 3
+
+        /** Long enough for an app that Android starts again on its own to be back before the second read. */
+        private const val RELAUNCH_CHECK_MILLIS: Long = 1_500L
 
         /** What an uninstalled package reads as when it is not even listed any more. */
         private val GONE_FOR_USER_ZERO: PackageState = PackageState(installed = false, enabled = 0, stopped = false)

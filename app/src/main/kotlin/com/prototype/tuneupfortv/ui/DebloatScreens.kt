@@ -133,7 +133,8 @@ internal fun DebloatScreen(state: AppUiState, connected: SessionState.Connected,
     val step = when {
         ui.running -> DebloatStep.RUNNING
         ui.stopOutcome != null -> DebloatStep.STOPPED
-        ui.toRestore.isNotEmpty() -> DebloatStep.DONE
+        // A run whose packages were all refused still has a report: the reasons are on its rows.
+        ui.statuses.isNotEmpty() -> DebloatStep.DONE
         else -> DebloatStep.READY
     }
     val view = when {
@@ -246,13 +247,26 @@ internal fun DebloatScreen(state: AppUiState, connected: SessionState.Connected,
                 // In the assistant the way on is "Next" (the launcher); outside it, "Finish" closes the report.
                 val onward = if (inAssistant) actions::nextDebloat else actions::finishDebloat
                 val onwardLabel = stringResource(if (inAssistant) R.string.debloat_next else R.string.debloat_finish)
+                // The packages the run never reached can go on once nothing is left open; what failed is undone on its own.
+                val untriedCount = ui.statuses.values.count { it == StepStatus.Untried }
+                val canContinue = untriedCount > 0 && openEntries.isEmpty()
+                val failedToUndo = ui.toRestore.count { ui.statuses[it] is StepStatus.Failed }
                 if (step == DebloatStep.STOPPED) {
+                    // A change is waiting for a decision: keep it, or undo the failed ones (which closes it once it is back).
                     if (stoppedEntry != null) FocusButton(stringResource(R.string.debloat_keep), onClick = { actions.acceptEntry(stoppedEntry.id) })
-                    FocusButton(stringResource(R.string.debloat_undo, ui.toRestore.size), onClick = actions::restoreDebloat, modifier = Modifier.focusRequester(actionRequester), requestInitialFocus = true, style = ButtonStyle.PRIMARY)
+                    if (failedToUndo > 0) {
+                        FocusButton(stringResource(R.string.debloat_undo_failed, failedToUndo), onClick = actions::restoreFailedDebloat, modifier = Modifier.focusRequester(actionRequester), requestInitialFocus = true, style = ButtonStyle.PRIMARY)
+                    }
                     FocusButton(onwardLabel, onClick = onward)
                 } else {
-                    FocusButton(stringResource(R.string.debloat_undo, ui.toRestore.size), onClick = actions::restoreDebloat)
-                    FocusButton(onwardLabel, onClick = onward, modifier = Modifier.focusRequester(actionRequester), requestInitialFocus = true, style = ButtonStyle.PRIMARY)
+                    if (failedToUndo > 0) FocusButton(stringResource(R.string.debloat_undo_failed, failedToUndo), onClick = actions::restoreFailedDebloat)
+                    if (ui.toRestore.isNotEmpty()) FocusButton(stringResource(R.string.debloat_undo, ui.toRestore.size), onClick = actions::restoreDebloat)
+                    if (canContinue) {
+                        FocusButton(stringResource(R.string.debloat_continue, untriedCount), onClick = actions::continueDebloat, modifier = Modifier.focusRequester(actionRequester), requestInitialFocus = true, style = ButtonStyle.PRIMARY)
+                        FocusButton(onwardLabel, onClick = onward)
+                    } else {
+                        FocusButton(onwardLabel, onClick = onward, modifier = Modifier.focusRequester(actionRequester), requestInitialFocus = true, style = ButtonStyle.PRIMARY)
+                    }
                 }
             }
             tab == DebloatTab.TO_DISABLE && openEntries.isNotEmpty() ->
@@ -318,7 +332,8 @@ internal fun DebloatScreen(state: AppUiState, connected: SessionState.Connected,
                 if (step == DebloatStep.STOPPED) {
                     Banner(stringResource(R.string.debloat_stopped_banner, stoppedAt ?: stoppedEntry?.packageId.orEmpty()), Tone.WARNING, Modifier.padding(horizontal = 6.vp))
                 } else {
-                    ResultHero(ui.toRestore.size)
+                    val disabledCount = ui.statuses.values.count { it == StepStatus.Done }
+                    if (disabledCount > 0) ResultHero(disabledCount) else Banner(stringResource(R.string.debloat_nothing_disabled), Tone.WARNING, Modifier.padding(horizontal = 6.vp))
                     if (mayLand) Banner(stringResource(R.string.debloat_may_land_banner), Tone.WARNING, Modifier.padding(horizontal = 6.vp))
                 }
             else -> Unit
@@ -377,6 +392,9 @@ internal fun DebloatScreen(state: AppUiState, connected: SessionState.Connected,
                                 tickable = toDisable || toEnable,
                                 showTick = step == DebloatStep.READY,
                                 tickSlot = tabHasTicks,
+                                reason = (ui.statuses[entry.packageId] as? StepStatus.Failed)?.let { failed ->
+                                    failureReason(failed.outcome, connected.journalEntries.firstOrNull { it.id == ui.runEntries[entry.packageId] })
+                                },
                                 requestInitialFocus = !hasButton && lines.firstOrNull() == line,
                                 onClick = when {
                                     ui.confirming -> null
@@ -515,6 +533,8 @@ private fun DebloatRow(
     tickSlot: Boolean,
     requestInitialFocus: Boolean,
     onClick: (() -> Unit)?,
+    /** Why the change did not come out clean, as the TV said it. */
+    reason: String? = null,
 ) {
     val visual = rememberAppVisual(entry.packageId)
     val showId = visual.label != entry.packageId
@@ -542,7 +562,8 @@ private fun DebloatRow(
             Column(Modifier.weight(1f)) {
                 Text(visual.label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (showId) Text(entry.packageId, style = subtitleStyle(), color = palette.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (note != null) Text(note, style = subtitleStyle(), color = palette.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (reason != null) Text(reason, style = subtitleStyle(), color = palette.danger, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                else if (note != null) Text(note, style = subtitleStyle(), color = palette.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             StatePill(entryState, status)
         }

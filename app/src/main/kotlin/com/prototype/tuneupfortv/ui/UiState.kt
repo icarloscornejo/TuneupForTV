@@ -2,10 +2,12 @@ package com.prototype.tuneupfortv.ui
 
 import com.prototype.tuneupfortv.device.Category
 import com.prototype.tuneupfortv.device.DebloatList
+import com.prototype.tuneupfortv.device.LauncherRelease
 import com.prototype.tuneupfortv.device.ListFilter
 import com.prototype.tuneupfortv.safety.AcceptResult
 import com.prototype.tuneupfortv.safety.ActionKind
 import com.prototype.tuneupfortv.safety.ActionOutcome
+import com.prototype.tuneupfortv.safety.EntryStatus
 import com.prototype.tuneupfortv.safety.LauncherSwapRunner
 import com.prototype.tuneupfortv.safety.RejectReason
 import com.prototype.tuneupfortv.safety.SwapOutcome
@@ -47,7 +49,7 @@ sealed interface ActionUi {
 
     /** Stopping one app after another. It cannot be cancelled halfway. */
     data class ClosingAll(val done: Int, val total: Int) : ActionUi
-    data class ClosedAll(val stopped: Int, val failed: Int) : ActionUi
+    data class ClosedAll(val stopped: Int, val failed: Int, val reopened: Int = 0) : ActionUi
 
     /** Before changing several packages at once: what will be done and what will be left alone. */
     data class ConfirmBatch(val kind: ActionKind) : ActionUi
@@ -60,16 +62,59 @@ sealed interface ActionUi {
     data class AcceptRefused(val result: AcceptResult) : ActionUi
 }
 
-/** How a batch ended. A batch stops at the first change that is not clean; the rest are then [untried]. */
+/**
+ * How a batch ended. A package the TV refused is skipped over and the batch goes on; it stops only at a change that
+ * leaves something open for the user to decide. Whatever was not reached is in [untriedIds].
+ */
 data class BatchResult(
     val kind: ActionKind,
     val succeeded: Int,
     /** Left alone because the guard would not allow them. */
     val skipped: Int,
-    val untried: Int,
     val stoppedAt: String?,
     val stoppedBecause: ActionOutcome?,
-)
+    /** Package to the journal entry of its change. */
+    val entries: Map<String, String> = emptyMap(),
+    /** The packages that may have changed the TV (sent, and the entry is not FAILED), in the order they were changed. */
+    val changed: List<String> = emptyList(),
+    /** Tried and not clean, with what came back. A package the TV refused is here and not in [changed]. */
+    val failed: Map<String, ActionOutcome?> = emptyMap(),
+    /** Never tried: the run stopped before them, or the connection was lost. Continue picks these up. */
+    val untriedIds: List<String> = emptyList(),
+    /** What the undo buttons did on this report: how many packages are back, and how many could not be put back. */
+    val undone: Int = 0,
+    val undoFailed: Int = 0,
+    /** Force stops that went through but whose app came back, or never died. */
+    val reopened: Int = 0,
+) {
+    val untried: Int get() = untriedIds.size
+
+    /** The packages whose failed change may have reached the TV: the only ones "Undo the failed" has anything to do for. */
+    val failedToUndo: List<String> get() = changed.filter { it in failed }
+}
+
+/** What one outcome means for a run of changes. The wizard and the packages batch read it the same way. */
+enum class BatchVerdict { SUCCEEDED, SKIPPED, STOP, UNTRIED, FAILED }
+
+/**
+ * Done and not holding anything open is a success, which includes an uninstall (it is never watched). A change that
+ * leaves an entry open stops the run, because the executor refuses every new disable until it is resolved. Never tried
+ * (blocked, or the session is gone) stays pending for Continue.
+ */
+fun batchVerdict(outcome: ActionOutcome?): BatchVerdict =
+    when (outcome) {
+        null, is ActionOutcome.Blocked, is ActionOutcome.DeviceError -> BatchVerdict.UNTRIED
+        // Stopped as asked; whether it came back is counted apart (see BatchResult.reopened).
+        ActionOutcome.ForceStopped, ActionOutcome.ForceStopRelaunched, ActionOutcome.ForceStopStillRunning -> BatchVerdict.SUCCEEDED
+        is ActionOutcome.Rejected -> BatchVerdict.SKIPPED
+        is ActionOutcome.Finished ->
+            when {
+                outcome.entry.isBlocking -> BatchVerdict.STOP
+                outcome.entry.status == EntryStatus.DONE -> BatchVerdict.SUCCEEDED
+                else -> BatchVerdict.FAILED
+            }
+        is ActionOutcome.WatchUnavailable, is ActionOutcome.JournalFailed, is ActionOutcome.ForceStopFailed -> BatchVerdict.FAILED
+    }
 
 /** What one package shows while a debloat or its restore runs. */
 sealed interface StepStatus {
@@ -146,6 +191,28 @@ data class LauncherUi(
     val outcome: SwapOutcome? = null,
 )
 
+/** Why an update did not start. */
+enum class UpdateProblem { DOWNLOAD, NEEDS_PERMISSION, FAILED }
+
+/** How handing the downloaded APK to the system installer went. The system asks the owner to confirm after this. */
+enum class UpdateInstallStart { STARTED, NEEDS_PERMISSION, FAILED }
+
+/** The check for a newer Tuneup, and the install of it. */
+data class UpdateUi(
+    /** What is running now: the version name, and the code the releases are compared with. */
+    val installedVersion: String = "",
+    val installedCode: Long = 0,
+    val checking: Boolean = false,
+    /** A check ended with an answer, newer or not. */
+    val checked: Boolean = false,
+    /** The latest release when it is newer than the installed one. */
+    val available: LauncherRelease? = null,
+    /** A check the user asked for could not reach GitHub. The one at start stays silent. */
+    val couldNotCheck: Boolean = false,
+    val installing: Boolean = false,
+    val problem: UpdateProblem? = null,
+)
+
 /** Everything the screens draw, as one immutable value. */
 data class AppUiState(
     val settings: AppSettings,
@@ -161,6 +228,7 @@ data class AppUiState(
     val selection: Set<String>,
     val debloat: DebloatUi = DebloatUi(),
     val launcher: LauncherUi = LauncherUi(),
+    val update: UpdateUi = UpdateUi(),
 ) {
     val screen: Screen get() = backStack.last()
     val connected: SessionState.Connected? get() = session as? SessionState.Connected
@@ -177,6 +245,12 @@ interface AppActions {
     fun onBack()
     fun acceptNotice()
 
+    /** Looks for a newer Tuneup on GitHub. */
+    fun checkForUpdate()
+
+    /** Downloads the newer Tuneup, checks its hash and hands it to the system installer, which asks for confirmation. */
+    fun installUpdate()
+
     /** The user read the "this model has not been tested" warning: Home hides it for [model] from now on. */
     fun dismissUntested(model: String)
     fun retry()
@@ -188,6 +262,12 @@ interface AppActions {
     fun askAction(packageId: String, kind: ActionKind)
     fun confirmAction()
     fun acceptEntry(entryId: String)
+
+    /** From the report of a batch: puts back what it changed, or only what failed. */
+    fun restoreBatch(onlyFailed: Boolean)
+
+    /** From the report of a batch: goes on with the packages it never reached. */
+    fun continueBatch()
     fun dismissAction()
     fun startSelecting()
     fun stopSelecting()
@@ -210,6 +290,8 @@ interface AppActions {
     fun cancelDebloat()
     fun startDebloat()
     fun restoreDebloat()
+    fun restoreFailedDebloat()
+    fun continueDebloat()
     fun clearDebloatStop()
 
     /** From the result of a run to the optional launcher step. */
